@@ -20,7 +20,7 @@ Usage
 =====
 
 ```
-node snapback.js 
+npm run dev
 ```
 
 ![A picture of the server side](./readme_images/run_server.png)
