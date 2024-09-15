@@ -11,3 +11,4 @@ package-lock.json
 *.zip
 automod.js
 hashingtest.js
+.env

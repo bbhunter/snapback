@@ -1,0 +1,31 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:../report/snapback.db"
+}
+
+model Service {
+  id               Int     @id @default(autoincrement())
+  url              String  @unique
+  imagePath        String?
+  imageHash        String?
+  textPath         String?
+  textHash         String?
+  title            String?
+  headers          String?
+  textSize         Int?
+  numTags          Int?
+  numATags         Int?
+  numScriptTags    Int?
+  numInputTags     Int?
+  metaTags         String?
+  captured         Int?
+  error            Int?
+  viewed           Int?
+  defaultCreds     String?
+  authPrompt       Int?
+  notes            String?
+}

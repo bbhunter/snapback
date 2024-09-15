@@ -3,15 +3,20 @@
   "version": "2.0.0",
   "description": "Super Fast HTTP Screenshots",
   "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
   "author": "Forrest Kasler (ph3eds) @fkasler",
   "license": "ISC",
   "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "setup": "npm install && npx prisma generate && node -e \"require('fs').writeFileSync('.env', 'DATABASE_URL=\\\"file:./report/snapback.db\\\"\\n')\"",
+    "dev": "npm run setup && npm start",
+    "prisma:generate": "npx prisma generate",
+    "clean": "rm -rf node_modules package-lock.json && npm cache clean --force",
+    "reset": "npm run clean && npm run setup"
+  },
   "dependencies": {
+    "@prisma/client": "^5.19.1",
     "archiver": "^7.0.1",
-    "better-sqlite3": "^11.1.2",
     "dateformat": "^5.0.3",
     "fastify": "^4.28.1",
     "fastify-socket.io": "^5.0.0",

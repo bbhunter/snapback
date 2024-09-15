@@ -89,105 +89,96 @@
       }
 
       function add_service(service) {
-        //console.log(service)
-        if (service.default_creds == 1) {
-          default_creds = "checked"
-        } else {
-          default_creds = ""
-        }
+        //console.log(service);
+        let default_creds = service.defaultCreds ? "checked" : "";
+        let viewed = service.viewed === 1 ? "checked" : "";
+        let auth_prompt = service.authPrompt === 1 ? "checked" : "";
 
-        if (service.viewed == 1) {
-          viewed = "checked"
-        } else {
-          viewed = ""
-        }
+        // Remove from error list if it was there before
+        $(`a[href$='${service.url}']`).parent().parent().remove();
 
-        if (service.auth_prompt == 1) {
-          auth_prompt = "checked"
-        } else {
-          auth_prompt = ""
-        }
-        //remove it from the error list if it was there before
-        if ((typeof $("a[href$='" + service.url + "']")[0]) != 'undefined') {
-          $("a[href$='" + service.url + "']")[0].remove()
-        }
+        // Check if there's an existing image with the same hash
+        if ($(`#image_${service.imageHash}`).length > 0) {
+          let peerTable = $(`#image_${service.imageHash}`).next('table');
+          let peerCount = peerTable.children().length;
 
-        //if it has the exact image as another service
-        if ($(`#image_${service.image_hash}`).length > 0) {
-          peer_count = $($($(`#image_${service.image_hash}`)[0]).next('table')[0]).children().length
-          if (peer_count == 1) {
-            $($($(`#image_${service.image_hash}`)[0]).next('table')[0]).prepend(` \
-                  <tr>\
-                    <td align="right">Modify All</td>\
-                    <td align="right"><input type="text" class="mass_url_notes"></input></td>\
-                    <td align="right"><input type="text" class="mass_default_creds"></input></td>\
-                    <td align="right"><input type="checkbox" class="mass_auth_prompt"></input></td>\
-                    <td align="right"><input type="checkbox" class="mass_viewed_url"></input></td>\
-                    <td align="right"></td>\
-                  </tr>\
-               `)
+          if (peerCount === 1) {
+            peerTable.prepend(`
+                <tr>
+                    <td align="right">Modify All</td>
+                    <td align="right"><input type="text" class="mass_url_notes"></input></td>
+                    <td align="right"><input type="text" class="mass_default_creds"></input></td>
+                    <td align="right"><input type="checkbox" class="mass_auth_prompt"></input></td>
+                    <td align="right"><input type="checkbox" class="mass_viewed_url"></input></td>
+                    <td align="right"></td>
+                </tr>
+            `);
           }
-          $($($(`#image_${service.image_hash}`)[0]).next('table')[0]).append(` \
-                <tr id="${service.url}">\
-                  <td><a class="url_link" target="_blank" href="${service.url}">${service.url}</a></td>\
-                  <td><span>notes:</span><input type="text" class="url_notes" value="${service.notes}"></input></td>\
-                  <td><span>weak creds:</span><input type="text" class="default_creds" value="${service.default_creds}"></input></td>\
-                  <td><span>auth prompt:</span><input type="checkbox" class="auth_prompt" ${auth_prompt}></input></td>\
-                  <td><span>viewed:</span><input type="checkbox" class="viewed_url" ${viewed}></input></td>\
-                  <td></input><button class="gen_module">Generate Bruteforce Module</button></td>\
-                </tr>\
-            `)
-          //else if it also doesn't have the same html then it is unique
-        } else if ($(`#${service.text_hash}`).length == 0) {
-          if (tag_counts.indexOf(service.num_tags) == -1) {
-            tag_counts.push(service.num_tags)
-            tag_counts = tag_counts.sort(function (a, b) { return b - a })
-            let new_element_placement = tag_counts.indexOf(service.num_tags)
-            //console.log(new_element_placement)
-            $(`#report > div:nth-child(${new_element_placement + 1})`).before(` \
-                <div id="num_tags_${service.num_tags}"></div>
-              `)
+
+          peerTable.append(`
+            <tr id="${service.url}">
+                <td><a class="url_link" target="_blank" href="${service.url}">${service.url}</a></td>
+                <td><span>notes:</span><input type="text" class="url_notes" value="${service.notes || ''}"></input></td>
+                <td><span>weak creds:</span><input type="text" class="default_creds" value="${service.defaultCreds || ''}"></input></td>
+                <td><span>auth prompt:</span><input type="checkbox" class="auth_prompt" ${auth_prompt}></input></td>
+                <td><span>viewed:</span><input type="checkbox" class="viewed_url" ${viewed}></input></td>
+                <td><button class="gen_module">Generate Bruteforce Module</button></td>
+            </tr>
+        `);
+        } else if ($(`#${service.textHash}`).length === 0) {
+          // New unique service
+          if (!tag_counts.includes(service.numTags)) {
+            tag_counts.push(service.numTags);
+            tag_counts.sort((a, b) => b - a);
+            let new_element_placement = tag_counts.indexOf(service.numTags);
+            $(`#report > div:nth-child(${new_element_placement + 1})`).before(`
+                <div id="num_tags_${service.numTags}"></div>
+            `);
           }
-          $(`#num_tags_${service.num_tags}`).append(` \
-              <div id="service_${service.text_hash}">\
-                <img id="image_${service.image_hash}" src="${service.image_path}"></img>\
-                <table id="${service.text_hash}">\
-                  <tr id="${service.url}">\
-                    <td><a class="url_link" target="_blank" href="${service.url}">${service.url}</a></td>\
-                    <td><span>notes:</span><input type="text" class="url_notes" value="${service.notes}"></input></td>\
-                    <td><span>weak creds:</span><input type="text" class="default_creds" value="${service.default_creds}"></input></td>\
-                    <td><span>auth prompt:</span><input type="checkbox" class="auth_prompt" ${auth_prompt}></input></td>\
-                    <td><span>viewed:</span><input type="checkbox" class="viewed_url" ${viewed}></td>\
-                    <td></input><button class="gen_module">Generate Bruteforce Module</button></td>\
-                  </tr>\
-                </table>\
-              </div>\
-            `)
-          //otherwise it is not unique based on having the exact same html as another service
+
+          $(`#num_tags_${service.numTags}`).append(`
+            <div id="service_${service.textHash}">
+                <img id="image_${service.imageHash}" src="${service.imagePath}"></img>
+                <table id="${service.textHash}">
+                    <tr id="${service.url}">
+                        <td><a class="url_link" target="_blank" href="${service.url}">${service.url}</a></td>
+                        <td><span>notes:</span><input type="text" class="url_notes" value="${service.notes || ''}"></input></td>
+                        <td><span>weak creds:</span><input type="text" class="default_creds" value="${service.defaultCreds || ''}"></input></td>
+                        <td><span>auth prompt:</span><input type="checkbox" class="auth_prompt" ${auth_prompt}></input></td>
+                        <td><span>viewed:</span><input type="checkbox" class="viewed_url" ${viewed}></input></td>
+                        <td><button class="gen_module">Generate Bruteforce Module</button></td>
+                    </tr>
+                </table>
+            </div>
+        `);
         } else {
-          peer_count = $(`#${service.text_hash}`).children().length
-          if (peer_count == 1) {
-            $(`#${service.text_hash}`).prepend(` \
-                <tr>\
-                  <td align="right">Modify All</td>\
-                  <td align="right"><input type="text" class="mass_url_notes"></input></td>\
-                  <td align="right"><input type="text" class="mass_default_creds"></input></td>\
-                  <td align="right"><input type="checkbox" class="mass_auth_prompt"></input></td>\
-                  <td align="right"><input type="checkbox" class="mass_viewed_url"></input></td>\
-                  <td align="right"></td>\
-                </tr>\
-             `)
+          // Service with same text hash exists
+          let existingTable = $(`#${service.textHash}`);
+          let peerCount = existingTable.children().length;
+
+          if (peerCount === 1) {
+            existingTable.prepend(`
+                <tr>
+                    <td align="right">Modify All</td>
+                    <td align="right"><input type="text" class="mass_url_notes"></input></td>
+                    <td align="right"><input type="text" class="mass_default_creds"></input></td>
+                    <td align="right"><input type="checkbox" class="mass_auth_prompt"></input></td>
+                    <td align="right"><input type="checkbox" class="mass_viewed_url"></input></td>
+                    <td align="right"></td>
+                </tr>
+            `);
           }
-          $(`#${service.text_hash}`).append(` \
-                <tr id="${service.url}">\
-                  <td><a class="url_link" target="_blank" href="${service.url}">${service.url}</a></td>\
-                  <td><span>notes:</span><input type="text" class="url_notes" value="${service.notes}"></input></td>\
-                  <td><span>weak creds:</span><input type="text" class="default_creds" value="${service.default_creds}"></input></td>\
-                  <td><span>auth prompt:</span><input type="checkbox" class="auth_prompt" ${auth_prompt}></input></td>\
-                  <td><span>viewed:</span><input type="checkbox" class="viewed_url" ${viewed}></input></td>\
-                  <td></input><button class="gen_module">Generate Bruteforce Module</button></td>\
-                </tr>\
-            `)
+
+          existingTable.append(`
+            <tr id="${service.url}">
+                <td><a class="url_link" target="_blank" href="${service.url}">${service.url}</a></td>
+                <td><span>notes:</span><input type="text" class="url_notes" value="${service.notes || ''}"></input></td>
+                <td><span>weak creds:</span><input type="text" class="default_creds" value="${service.defaultCreds || ''}"></input></td>
+                <td><span>auth prompt:</span><input type="checkbox" class="auth_prompt" ${auth_prompt}></input></td>
+                <td><span>viewed:</span><input type="checkbox" class="viewed_url" ${viewed}></input></td>
+                <td><button class="gen_module">Generate Bruteforce Module</button></td>
+            </tr>
+        `);
         }
       }
 
@@ -222,7 +213,7 @@
       $(document).on('focusout', '.default_creds', function () {
         creds = $(this).val()
         url = $(this).parent().parent()[0].id
-        socket.emit("update_record", { "url": url, "key": "default_creds", "value": creds })
+        socket.emit("update_record", { "url": url, "key": "defaultCreds", "value": creds })
       })
 
       $(document).on('focusout', '.mass_default_creds', function () {
@@ -231,7 +222,7 @@
         $.each(other_inputs, function () {
           $(this).val(creds)
           url = $(this).parent().parent()[0].id
-          socket.emit("update_record", { "url": url, "key": "default_creds", "value": creds })
+          socket.emit("update_record", { "url": url, "key": "defaultCreds", "value": creds })
         })
       })
 
@@ -267,22 +258,22 @@
         // }
         var service_name = prompt("Enter service name", "")
         const response = await fetch('/generate_bruteforce_module', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                service_name: service_name,
-                //template: template,
-                url: url
-            })
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            service_name: service_name,
+            //template: template,
+            url: url
+          })
         });
 
         console.dir(response);
 
         if (!response.ok) {
-            console.error('Network response was not ok', response.statusText);
-            return;
+          console.error('Network response was not ok', response.statusText);
+          return;
         }
 
         const data = await response.text();

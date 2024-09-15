@@ -1,5 +1,6 @@
 import fs from 'fs'
 import glob from 'glob-promise'
+import { execSync } from 'child_process'
 import path from 'path'
 const __dirname = path.resolve()
 import PQueue from 'p-queue'
@@ -13,11 +14,10 @@ import lineReader from 'line-reader'
 import archiver from 'archiver'
 const { parseString } = xml2js
 import { Readable, PassThrough } from 'stream'
+import { PrismaClient } from '@prisma/client'
 
-//const user_agent = "Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; AS; rv:11.0) like Gecko"
 const user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.54 Safari/537.36"
 
-//general browser automation settings
 const chrome_flags = [
   "--ignore-certificate-errors",
   "--disable-default-apps",
@@ -37,44 +37,34 @@ const fastify = Fastify({
 
 fastify.register(fastify_io, {})
 
-//set up a report directory if it doesn't exist
-try {
-  fs.mkdirSync('./report')
-} catch (err) {
-  //must exist already. We do it this way to avoid a race condition of checking the existence of the dir before trying to write to it
+const reportDir = path.join(__dirname, 'report')
+const dbPath = path.join(reportDir, 'snapback.db')
+
+// Create the report directory if it doesn't exist
+if (!fs.existsSync(reportDir)) {
+  fs.mkdirSync(reportDir)
 }
-import Database from 'better-sqlite3'
-//var db = new Database('./report/snapback.db', { verbose: console.log })
-var db = new Database('./report/snapback.db')
 
-//create the db if it doesn't exist.
-let db_setup = db.prepare(`
-  CREATE TABLE IF NOT EXISTS services (
-    url TEXT NOT NULL UNIQUE,
-    image_path TEXT,
-    image_hash TEXT,
-    text_path TEXT,
-    text_hash TEXT,
-    title TEXT,
-    headers TEXT,
-    text_size INTEGER,
-    num_tags INTEGER,
-    num_a_tags INTEGER,
-    num_script_tags INTEGER,
-    num_input_tags INTEGER,
-    meta_tags TEXT,
-    captured INTEGER,
-    error INTEGER,
-    viewed INTEGER,
-    default_creds TEXT,
-    auth_prompt INTEGER,
-    notes TEXT
-  )`
-)
+// Check if the database file exists
+const dbExists = fs.existsSync(dbPath)
 
-db_setup.run()
+// Initialize Prisma client
+const prisma = new PrismaClient()
 
-//load an array of our bruteforce modules for later filtering
+async function initializeDatabase() {
+  if (!dbExists) {
+    console.log('Initializing database...')
+    try {
+      // Run Prisma migration
+      execSync('npx prisma migrate deploy', { stdio: 'inherit' })
+      console.log('Database initialized successfully.')
+    } catch (error) {
+      console.error('Error initializing database:', error)
+      process.exit(1)
+    }
+  }
+}
+
 let bruteforce_modules = [];
 
 async function loadModules() {
@@ -84,7 +74,6 @@ async function loadModules() {
       let module_file = path.basename(file);
       bruteforce_modules.push(module_file);
     });
-    //console.log(bruteforce_modules);
   } catch (er) {
     console.error("Error occurred while loading files: ", er);
   }
@@ -92,7 +81,6 @@ async function loadModules() {
 
 loadModules();
 
-//basic homepage
 fastify.route({
   method: ['GET'],
   url: '/',
@@ -120,7 +108,6 @@ fastify.route({
   }
 })
 
-//report items
 fastify.route({
   method: ['GET'],
   url: '/report/*',
@@ -130,13 +117,18 @@ fastify.route({
   }
 })
 
-//send all services on page reload etc.
 fastify.route({
   method: ['GET'],
   url: '/all_services',
   handler: async function (req, reply) {
-    let stmt = db.prepare("SELECT * FROM services WHERE captured = 1 OR error = 1")
-    let all_services = stmt.all()
+    const all_services = await prisma.service.findMany({
+      where: {
+        OR: [
+          { captured: 1 },
+          { error: 1 }
+        ]
+      }
+    })
     await reply.type('application/json').send(all_services)
   }
 })
@@ -145,8 +137,9 @@ fastify.route({
   method: ['GET'],
   url: '/auth_prompts',
   handler: async function (req, reply) {
-    let stmt = db.prepare("SELECT * FROM services WHERE auth_prompt = 1")
-    let all_services = stmt.all()
+    const all_services = await prisma.service.findMany({
+      where: { authPrompt: 1 }
+    })
     await reply.type('application/json').send(all_services)
   }
 })
@@ -155,8 +148,12 @@ fastify.route({
   method: ['GET'],
   url: '/unviewed_services',
   handler: async function (req, reply) {
-    let stmt = db.prepare("SELECT * FROM services WHERE viewed = 0 AND error = 0")
-    let all_services = stmt.all()
+    const all_services = await prisma.service.findMany({
+      where: {
+        viewed: 0,
+        error: 0
+      }
+    })
     await reply.type('application/json').send(all_services)
   }
 })
@@ -165,8 +162,14 @@ fastify.route({
   method: ['GET'],
   url: '/notes_services',
   handler: async function (req, reply) {
-    let stmt = db.prepare("SELECT * FROM services WHERE notes != '' OR default_creds != ''")
-    let all_services = stmt.all()
+    const all_services = await prisma.service.findMany({
+      where: {
+        OR: [
+          { notes: { not: '' } },
+          { defaultCreds: { not: '' } }
+        ]
+      }
+    })
     await reply.type('application/json').send(all_services)
   }
 })
@@ -184,13 +187,19 @@ fastify.route({
     archive.file('./report/snapback.db', { name: 'snapback.db' })
     console.log('zipping:snapback.db')
     fastify.io.emit('server_message', 'zipping:snapback.db')
-    let stmt = db.prepare("SELECT * FROM services WHERE default_creds != '' OR auth_prompt = 1")
-    let rows = stmt.all()
+    const rows = await prisma.service.findMany({
+      where: {
+        OR: [
+          { defaultCreds: { not: '' } },
+          { authPrompt: 1 }
+        ]
+      }
+    })
     for (const row of rows) {
-      let file_name = row.image_path.split('/')[1]
+      let file_name = row.imagePath.split('/')[1]
       console.log('zipping:' + file_name)
       fastify.io.emit('server_message', 'zipping:' + file_name)
-      await archive.file('./' + row.image_path, { name: file_name })
+      await archive.file('./' + row.imagePath, { name: file_name })
     }
     archive.finalize()
     await reply.type('application/zip').send(fileOutput)
@@ -205,11 +214,10 @@ fastify.route({
     let fileOutput = new Readable({
       read() { }
     })
-    fileOutput.push(`"url","image_path","image_hash","text_path","text_hash","text_size","captured","error","viewed","default_creds","auth_prompt","notes"\n`)
-    let stmt = db.prepare("SELECT * FROM services")
-    let full_db = stmt.all()
+    fileOutput.push(`"url","imagePath","imageHash","textPath","textHash","textSize","captured","error","viewed","defaultCreds","authPrompt","notes"\n`)
+    const full_db = await prisma.service.findMany()
     full_db.forEach(function (row) {
-      fileOutput.push(`"${row.url}","${row.image_path}","${row.image_hash}","${row.text_path}","${row.text_hash}","${row.text_size}","${row.captured}","${row.error}","${row.viewed}","${row.default_creds}","${row.auth_prompt}","${row.notes}"\n`)
+      fileOutput.push(`"${row.url}","${row.imagePath}","${row.imageHash}","${row.textPath}","${row.textHash}","${row.textSize}","${row.captured}","${row.error}","${row.viewed}","${row.defaultCreds}","${row.authPrompt}","${row.notes}"\n`)
     })
     fileOutput.push(null)
     await reply.type('text/csv').send(fileOutput)
@@ -246,16 +254,14 @@ fastify.route({
     }
   },
   handler: async function (req, reply) {
-    let stmt = db.prepare(`
-      SELECT * FROM services 
-      WHERE title LIKE $title_search
-      AND headers LIKE $header_search
-      AND meta_tags LIKE $metatag_search
-    `)
-    let all_services = stmt.all({
-      title_search: `%${req.query['title']}%`,
-      header_search: `%${req.query['header']}%`,
-      metatag_search: `%${req.query['metatag']}%`
+    const all_services = await prisma.service.findMany({
+      where: {
+        AND: [
+          { title: { contains: req.query['title'] } },
+          { headers: { contains: req.query['header'] } },
+          { metaTags: { contains: req.query['metatag'] } }
+        ]
+      }
     })
     await reply.type('application/json').send(all_services)
   }
@@ -285,34 +291,28 @@ fastify.route({
   },
   handler: async function (req, reply) {
     try {
-      let stmt = db.prepare(`
-        SELECT * FROM services WHERE url = $url
-      `);
-      let service = stmt.get({
-        url: req.body.url
-      });
+      const service = await prisma.service.findUnique({
+        where: { url: req.body.url }
+      })
 
       if (!service) {
-        return reply.status(404).send('Service not found');
+        return reply.status(404).send('Service not found')
       }
 
-      // Use promises for file reading and writing
-      //const data = await fs.promises.readFile(`./templates/${req.body.template}.js`, 'utf-8');
-      const data = await fs.promises.readFile(`./templates/post_auth.js`, 'utf-8');
+      const data = await fs.promises.readFile(`./templates/post_auth.js`, 'utf-8')
 
       let processedData = data
         .replace('TITLE', service.title)
         .replace('HEADERS', JSON.stringify(service.headers))
-        .replace('METATAGS', JSON.stringify(service.meta_tags));
+        .replace('METATAGS', JSON.stringify(service.metaTags))
 
-      let newFileName = req.body.service_name.toLowerCase().replace(/[\.\/:\?\&=]+/g, "_");
-      let newFilePath = `./bruteforce/${service.num_tags}_${newFileName}.js`;
+      let newFileName = req.body.service_name.toLowerCase().replace(/[\.\/:\?\&=]+/g, "_")
+      let newFilePath = `./bruteforce/${service.numTags}_${newFileName}.js`
 
-      //get a new promise that we can await on until we are finished
-      let resolvePromise;
+      let resolvePromise
       const myPromise = new Promise((resolve, reject) => {
-        resolvePromise = resolve;
-      });
+        resolvePromise = resolve
+      })
 
       let puppet_options = [
         "--ignore-certificate-errors",
@@ -326,63 +326,57 @@ fastify.route({
         ignoreDefaultArgs: ["--enable-automation"],
         defaultViewport: null,
         args: puppet_options
-      });
-      const pages = await browser.pages();
-      const page = pages[0];
+      })
+      const pages = await browser.pages()
+      const page = pages[0]
 
-      // Intercept network responses
       page.on('response', async response => {
         try {
-          const request = response.request();
-          const method = request.method();
+          const request = response.request()
+          const method = request.method()
           if (method === 'POST' || method === 'PUT') {
-            const req_body = request.postData();
-            //if the body matches user123 or pass123, we will log it
+            const req_body = request.postData()
             if (req_body.includes('user123') || req_body.includes('password123')) {
-              console.log(`POST request to ${response.url()} with body: ${req_body}`);
-              let req_headers = request.headers();
-              delete req_headers['cookie'];
-              delete req_headers['user-agent'];
-              delete req_headers['origin'];
-              delete req_headers['referer'];
-              delete req_headers['location'];
-              console.log(`Request headers: ${JSON.stringify(req_headers)}`);
-              const url = response.url();
-              const status = response.status();
-              const headers = response.headers();
-              console.log(`${status} ${JSON.stringify(headers)}`);
-              //just get the URL after the domain portion
-              processedData = processedData.replace('URL_PLACEHOLDER', url.replace(/.*\/\/[^\/]+/, ''));
-              processedData = processedData.replace('STATUS_PLACEHOLDER', status);
-              processedData = processedData.replace('HEADERS_PLACEHOLDER', JSON.stringify(req_headers));
-              processedData = processedData.replace('BODY_PLACEHOLDER', req_body).replace(/user123/g, '${user}').replace(/password123/g, '${pwd}');
-              await fs.promises.writeFile(newFilePath, processedData);
-              await browser.close();
+              console.log(`POST request to ${response.url()} with body: ${req_body}`)
+              let req_headers = request.headers()
+              delete req_headers['cookie']
+              delete req_headers['user-agent']
+              delete req_headers['origin']
+              delete req_headers['referer']
+              delete req_headers['location']
+              console.log(`Request headers: ${JSON.stringify(req_headers)}`)
+              const url = response.url()
+              const status = response.status()
+              const headers = response.headers()
+              console.log(`${status} ${JSON.stringify(headers)}`)
+              processedData = processedData.replace('URL_PLACEHOLDER', url.replace(/.*\/\/[^\/]+/, ''))
+              processedData = processedData.replace('STATUS_PLACEHOLDER', status)
+              processedData = processedData.replace('HEADERS_PLACEHOLDER', JSON.stringify(req_headers))
+              processedData = processedData.replace('BODY_PLACEHOLDER', req_body).replace(/user123/g, '${user}').replace(/password123/g, '${pwd}')
+              await fs.promises.writeFile(newFilePath, processedData)
+              await browser.close()
               resolvePromise()
-              return reply.type('text').send(`Template module written to ${service.num_tags}_${newFileName}.js, go finish it!`);
+              return reply.type('text').send(`Template module written to ${service.numTags}_${newFileName}.js, go finish it!`)
             }
           }
         } catch (err) {
-          resolvePromise();
-          return reply.type('text').send(`Error generating module! Try copying over the template yourself`);
-          //console.error(`Failed to process ${response.url()}: ${err.message}`);
+          resolvePromise()
+          return reply.type('text').send(`Error generating module! Try copying over the template yourself`)
         }
-      });
+      })
 
-      // Navigate to the target page
-      await page.goto(service.url, { waitUntil: 'networkidle0' });
+      await page.goto(service.url, { waitUntil: 'networkidle0' })
 
-      //prompt user for default credentials in the form user123:pass123 or 'don't know'
       await page.evaluate(async () => {
-        alert('Enter user123 and password123 to generate a login attempt. We\'ll capture and template the request for you.');
-      });
+        alert('Enter user123 and password123 to generate a login attempt. We\'ll capture and template the request for you.')
+      })
 
       await myPromise
-      console.log(`Template module written to ${service.num_tags}_${newFileName}.js, go finish it!`);
+      console.log(`Template module written to ${service.numTags}_${newFileName}.js, go finish it!`)
 
     } catch (err) {
-      console.error(err);
-      return reply.status(500).send('Internal Server Error');
+      console.error(err)
+      return reply.status(500).send('Internal Server Error')
     }
   }
 })
@@ -390,38 +384,42 @@ fastify.route({
 var allServices = []
 
 async function update_record(url, key, value, callback) {
-  let stmt = db.prepare(`UPDATE services SET (` + key + `) = ($value) WHERE url = '` + url + `'`)
-  stmt.run({ "value": value })
-  if ((typeof callback) != 'undefined') {
-    callback()
+  try {
+    await prisma.service.update({
+      where: { url: url },
+      data: { [key]: value }
+    })
+    if ((typeof callback) != 'undefined') {
+      callback()
+    }
+  } catch (error) {
+    console.error(`Error updating record: ${error}`)
   }
 }
 
-async function bruteforce(service, db, io, proxy) {
+async function bruteforce(service, io, proxy) {
   let similar_services = bruteforce_modules.filter(async function (module) {
     let module_tag_num = parseInt(module.match(/^\d+/)[0])
-    let variation = Math.abs(service.num_tags - module_tag_num)
+    let variation = Math.abs(service.numTags - module_tag_num)
     return (variation < 25)
   })
   for (let module of similar_services) {
     let brute_module = await import(`./bruteforce/${module}`)
     let match = await brute_module.match_fingerprint(service, proxy)
     if (match) {
-      let stmt = db.prepare(`UPDATE services SET (notes) = ($notes) WHERE url = $url`)
-      stmt.run({
-        "notes": match,
-        "url": service.url
+      await prisma.service.update({
+        where: { url: service.url },
+        data: { notes: match }
       })
       io.emit('server_message', `Matched Fingerprint For: ${match}`)
       io.emit('update_service', { "service": service.url, "field": "url_notes", "value": match })
       let creds = await brute_module.bruteforce(service, proxy)
       if (creds) {
-        let stmt = db.prepare(`UPDATE services SET (default_creds) = ($creds) WHERE url = $url`)
-        stmt.run({
-          "creds": creds,
-          "url": service.url
+        await prisma.service.update({
+          where: { url: service.url },
+          data: { defaultCreds: creds }
         })
-        io.emit('update_service', { "service": service.url, "field": "default_creds", "value": creds })
+        io.emit('update_service', { "service": service.url, "field": "defaultCreds", "value": creds })
         io.emit('server_message', `Found Creds: ${creds}`)
       }
     }
@@ -429,15 +427,15 @@ async function bruteforce(service, db, io, proxy) {
 }
 
 async function display_service(url, io, proxy) {
-  let stmt = db.prepare(`SELECT * FROM services WHERE url = $url`)
-  let row = stmt.get({ "url": url })
+  const row = await prisma.service.findUnique({
+    where: { url: url }
+  })
   io.emit('add_service', row)
-  bruteforce(row, db, io, proxy)
+  bruteforce(row, io, proxy)
 }
 
 const queue = new PQueue({ concurrency: 10 })
 
-//nessus parsing functions
 var xml_buffer = ''
 var add_to_buffer = false
 
@@ -522,11 +520,9 @@ async function getPic(url, browser, io, timeout, proxy) {
     let page = await browser.newPage()
     await page.setUserAgent(user_agent)
     await page.setViewport({ width: 1000, height: 500 })
-    //dismissing dialogs
     page.on('dialog', async dialog => {
       await dialog.dismiss()
     })
-    //wait for domcontentloaded to make sure we at least have the DOM before we start capturing
     let myTimeout = new Promise((resolve, reject) => setTimeout(resolve, (timeout * 1000)))
     let navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle2', timeout: (timeout * 1000) }).catch(async function (err) { return })
     let response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: (timeout * 1000) }).catch(async function (err) {
@@ -538,12 +534,9 @@ async function getPic(url, browser, io, timeout, proxy) {
       }
       throw new Error(`Error On URL: ${url}`)
     })
-    //wait either until the page is loaded (Idle2) or our timeout elapsed
     await Promise.race([navigationPromise, myTimeout])
-    //await Promise.race([page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 99999 }).catch(function (err) { return }), new Promise((resolve, reject) => setTimeout(resolve, (timeout * 1000)))])
-    update_record(url, "headers", JSON.stringify(response.headers()))
+    await update_record(url, "headers", JSON.stringify(response.headers()))
     let file_name = url.replace(/[\.\/:\?\&=]+/g, "_")
-    //Shout out to Sedric Louissaint for the the help on this... He picked the delay at 30000 ¯\_(ツ)_/¯
     await Promise.race([page.screenshot({ path: 'report/' + file_name + '.png' }), new Promise((resolve, reject) => setTimeout(reject, 30000))]).catch(async function (err) {
       console.log(err)
       try {
@@ -553,105 +546,81 @@ async function getPic(url, browser, io, timeout, proxy) {
       }
       throw new Error('Screenshot Failed')
     })
-    update_record(url, "image_path", 'report/' + file_name + '.png')
+    await update_record(url, "imagePath", 'report/' + file_name + '.png')
     let meta_tags = await page.evaluate('var meta = {};var metatags=document.getElementsByTagName("meta");for(var izz=0;izz<metatags.length;izz++){let name=metatags[izz].getAttribute("name");let property=metatags[izz].getAttribute("property");let content=metatags[izz].getAttribute("content");if(content!=undefined){if(property != undefined){meta[property] = content;}else if(name != ""){meta[name] = content;}}};JSON.stringify(meta);')
-    update_record(url, "meta_tags", meta_tags)
+    await update_record(url, "metaTags", meta_tags)
     let title = await page.evaluate('document.title')
-    update_record(url, "title", title)
+    await update_record(url, "title", title)
     let num_tags = await page.evaluate('document.getElementsByTagName("*").length')
-    update_record(url, "num_tags", parseInt(num_tags))
+    await update_record(url, "numTags", parseInt(num_tags))
     let num_a_tags = await page.evaluate('document.getElementsByTagName("a").length')
-    update_record(url, "num_a_tags", parseInt(num_a_tags))
+    await update_record(url, "numATags", parseInt(num_a_tags))
     let num_script_tags = await page.evaluate('document.getElementsByTagName("script").length')
-    update_record(url, "num_script_tags", parseInt(num_script_tags))
+    await update_record(url, "numScriptTags", parseInt(num_script_tags))
     let num_input_tags = await page.evaluate('document.getElementsByTagName("input").length')
-    update_record(url, "num_input_tags", parseInt(num_input_tags))
-    md5File('report/' + file_name + '.png').then((hash) => {
-      update_record(url, "image_hash", hash)
-    })
+    await update_record(url, "numInputTags", parseInt(num_input_tags))
+    const hash = await md5File('report/' + file_name + '.png')
+    await update_record(url, "imageHash", hash)
     let bodyHTML = await page.evaluate(() => document.documentElement.innerHTML)
     fs.writeFileSync('report/' + file_name + '.txt', bodyHTML)
-    //try to automatically find auth prompts
     if (bodyHTML.match(/type=['"]password['"]/ig)) {
-      update_record(url, "auth_prompt", 1)
+      await update_record(url, "authPrompt", 1)
     }
-    update_record(url, "text_path", 'report/' + file_name + '.txt')
-    update_record(url, "captured", 1)
+    await update_record(url, "textPath", 'report/' + file_name + '.txt')
+    await update_record(url, "captured", 1)
     console.log("queue:[" + queue.size + "/" + allServices.length.toString() + "]threads[" + queue.pending + "] captured: " + url)
     io.emit("server_message", "queue:[" + queue.size + "/" + allServices.length.toString() + "]threads[" + queue.pending + "] captured: " + url)
-    md5File('report/' + file_name + '.txt').then((hash) => {
-      let stats = fs.statSync('report/' + file_name + '.txt')
-      update_record(url, "text_size", stats.size)
-      //call display here to make sure we have logged the right stats first
-      update_record(url, "text_hash", hash, function () {
-        display_service(url, io, proxy)
-      })
-    })
-    update_record(url, "error", 0) //in case we re-try a host
+    const textHash = await md5File('report/' + file_name + '.txt')
+    const stats = fs.statSync('report/' + file_name + '.txt')
+    await update_record(url, "textSize", stats.size)
+    await update_record(url, "textHash", textHash)
+    display_service(url, io, proxy)
+    await update_record(url, "error", 0)
     await page.close()
   } catch (err) {
     console.log("queue:[" + queue.size + "/" + allServices.length.toString() + "]threads[" + queue.pending + "] problem capturing page: " + url)
     io.emit("server_message", "queue:[" + queue.size + "/" + allServices.length.toString() + "]threads[" + queue.pending + "] problem capturing page: " + url)
     console.log(err)
-    update_record(url, "error", 1)
+    await update_record(url, "error", 1)
     io.emit('show_error', url)
   }
 }
 
-function push_to_queue(url, browser, io, timeout, proxy) {
+async function push_to_queue(url, browser, io, timeout, proxy) {
   if (!allServices.includes(url)) {
-    let stmt = db.prepare(`
-      INSERT INTO services VALUES (
-        $url,
-        $image_path,
-        $image_hash,
-        $text_path,
-        $text_hash,
-        $title,
-        $headers,
-        $text_size,
-        $num_tags,
-        $num_a_tags,
-        $num_script_tags,
-        $num_input_tags,
-        $meta_tags,
-        $captured,
-        $error,
-        $viewed,
-        $default_creds,
-        $auth_prompt,
-        $notes
-      )
-    `)
-    stmt.run({
-      "url": url,
-      "image_path": '',
-      "image_hash": '',
-      "text_path": '',
-      "text_hash": '',
-      "title": '',
-      "headers": '',
-      "text_size": 0,
-      "num_tags": 0,
-      "num_a_tags": 0,
-      "num_script_tags": 0,
-      "num_input_tags": 0,
-      "meta_tags": '',
-      "captured": 0,
-      "error": 0,
-      "viewed": 0,
-      "default_creds": '',
-      "auth_prompt": 0,
-      "notes": ''
-    })
-    //if there weren't any errors, then continue pushing to queue
-    queue.add(() => getPic(url, browser, io, timeout, proxy))
-    allServices.push(url)
+    try {
+      await prisma.service.create({
+        data: {
+          url: url,
+          imagePath: '',
+          imageHash: '',
+          textPath: '',
+          textHash: '',
+          title: '',
+          headers: '',
+          textSize: 0,
+          numTags: 0,
+          numATags: 0,
+          numScriptTags: 0,
+          numInputTags: 0,
+          metaTags: '',
+          captured: 0,
+          error: 0,
+          viewed: 0,
+          defaultCreds: '',
+          authPrompt: 0,
+          notes: ''
+        }
+      })
+      queue.add(() => getPic(url, browser, io, timeout, proxy))
+      allServices.push(url)
+    } catch (error) {
+      console.error(`Error pushing to queue: ${error}`)
+    }
   }
 }
 
 async function process_file(request, io) {
-
   let puppet_options = [...chrome_flags]
   var timeout = request.timeout_setting
 
@@ -736,7 +705,6 @@ async function process_file(request, io) {
     await browser.close()
     return
   }
-  //make sure we have at least a couple in the queue before kicking it off
   setTimeout(async function () {
     await queue.onIdle()
     browser.close()
@@ -744,9 +712,7 @@ async function process_file(request, io) {
   }, 10000)
 }
 
-//continue with newly generated queue
 async function resume_scan(new_queue, request, io) {
-
   if (new_queue.length == 0) {
     io.emit('server_message', "Nothing to do!")
     return
@@ -784,6 +750,12 @@ async function resume_scan(new_queue, request, io) {
   }, 10000)
 }
 
+
+
+
+
+
+
 fastify.ready(async function (err) {
   if (err) throw err
   fastify.io.on('connect', function (socket) {
@@ -797,28 +769,34 @@ fastify.ready(async function (err) {
     socket.on('pause_scan', function () {
       queue.clear()
     })
-    socket.on('resume_scan', function (request) {
-      let stmt = db.prepare("SELECT * FROM services WHERE captured = 0 AND error = 0").pluck()
-      let new_queue = stmt.all()
-      resume_scan(new_queue, request, fastify.io)
+    socket.on('resume_scan', async function (request) {
+      const new_queue = await prisma.service.findMany({
+        where: {
+          captured: 0,
+          error: 0
+        },
+        select: { url: true }
+      })
+      resume_scan(new_queue.map(service => service.url), request, fastify.io)
     })
-    socket.on('scan_errors', function (request) {
-      let stmt = db.prepare("SELECT url FROM services WHERE error = 1").pluck()
-      let new_queue = stmt.all()
-      resume_scan(new_queue, request, fastify.io)
+    socket.on('scan_errors', async function (request) {
+      const new_queue = await prisma.service.findMany({
+        where: { error: 1 },
+        select: { url: true }
+      })
+      resume_scan(new_queue.map(service => service.url), request, fastify.io)
     })
-    socket.on('csv_export', function (request) {
+    socket.on('csv_export', async function (request) {
       let fileOutput = fs.createWriteStream('./' + request.csv_name);
-      fileOutput.write(`"url","image_path","image_hash","text_path","text_hash","text_size","captured","error","viewed","default_creds","auth_prompt","notes"\n`)
-      let stmt = db.prepare("SELECT * FROM services")
-      let full_db = stmt.all()
+      fileOutput.write(`"url","imagePath","imageHash","textPath","textHash","textSize","captured","error","viewed","defaultCreds","authPrompt","notes"\n`)
+      const full_db = await prisma.service.findMany()
       full_db.forEach(function (row) {
-        fileOutput.write(`"${row.url}","${row.image_path}","${row.image_hash}","${row.text_path}","${row.text_hash}","${row.text_size}","${row.captured}","${row.error}","${row.viewed}","${row.default_creds}","${row.auth_prompt}","${row.notes}"\n`)
+        fileOutput.write(`"${row.url}","${row.imagePath}","${row.imageHash}","${row.textPath}","${row.textHash}","${row.textSize}","${row.captured}","${row.error}","${row.viewed}","${row.defaultCreds}","${row.authPrompt}","${row.notes}"\n`)
       })
       fileOutput.close()
       fastify.io.emit("server_message", "Exported to: ./" + request.csv_name)
     })
-    socket.on('report_export', function (request) {
+    socket.on('report_export', async function (request) {
       var archive = archiver('zip')
       let fileOutput = fs.createWriteStream('./' + request.zip_name)
       fileOutput.on('close', function () {
@@ -831,23 +809,39 @@ fastify.ready(async function (err) {
         throw err
       })
       archive.file('./report/snapback.db', { name: 'snapback.db' })
-      let stmt = db.prepare("SELECT * FROM services WHERE default_creds != '' OR auth_prompt = 1")
-      let rows = stmt.all()
+      const rows = await prisma.service.findMany({
+        where: {
+          OR: [
+            { defaultCreds: { not: '' } },
+            { authPrompt: 1 }
+          ]
+        }
+      })
       rows.forEach(function (row) {
-        console.log(row.image_path)
-        let file_name = row.image_path.split('/')[1]
+        console.log(row.imagePath)
+        let file_name = row.imagePath.split('/')[1]
         console.log(file_name)
-        archive.file('./' + row.image_path, { name: file_name })
+        archive.file('./' + row.imagePath, { name: file_name })
       })
       archive.finalize()
     })
   })
 })
 
-// Run the fastify!
-fastify.listen({ "port": 2997, "host": '0.0.0.0' })
-  .then((address) => console.log(`server listening on ${address}`))
-  .catch(err => {
-    console.log(`Error starting server: ${err}`)
-    process.exit(1)
-  })
+// Initialize the database before starting the server
+initializeDatabase().then(() => {
+  // Start your Fastify server here
+  fastify.listen({ port: 2997, host: '0.0.0.0' })
+    .then((address) => console.log(`server listening on ${address}`))
+    .catch(err => {
+      console.log(`Error starting server: ${err}`)
+      process.exit(1)
+    })
+})
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('Gracefully shutting down')
+  await prisma.$disconnect()
+  process.exit(0)
+})
